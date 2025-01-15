@@ -1,4 +1,0 @@
-Clone backtest URL: 
-https://www.quantconnect.com/terminal/clone/-/99b1d05d075319c13b190e9abee2bc4b/clone-of%3A-trailing-stop-loss-from-tutorial
-Dedicated backtest URL: 
-https://www.quantconnect.com/terminal/processCache?request=embedded_backtest_99b1d05d075319c13b190e9abee2bc4b.html
