@@ -7,8 +7,9 @@ from AlgorithmImports import *
 
 class RangeBoundHedgingAlgorithm(QCAlgorithm):
     def Initialize(self):
-        self.SetStartDate(2024, 1, 1)
-        self.SetCash(100000)
+        self.SetStartDate(2019, 10, 20)
+        self.SetEndDate(2019, 11, 25)
+        self.SetCash(1000000)
         
         # Trading pair setup
         self.symbol = self.AddForex("EURUSD", Resolution.Minute).Symbol
@@ -18,7 +19,7 @@ class RangeBoundHedgingAlgorithm(QCAlgorithm):
         self.buyLine = None
         self.sellLine = None
         self.maxDrawdown = 0.02  # 2% maximum drawdown
-        self.positionSize = 0.1  # 10% of portfolio per trade
+        self.positionSize = 0.01  # 1% of portfolio per trade
         
         # Position tracking
         self.openBuyLots = 0
@@ -36,53 +37,10 @@ class RangeBoundHedgingAlgorithm(QCAlgorithm):
         # Warm up period
         self.SetWarmUp(20)
 
-        # Correct Bollinger Bands initialization
-        self.bb = self.BB(self.symbol, 20, 2)
-        self.range_bound_threshold = 0.8
-        self.range_period = 20
-
-        self.last_range_update = datetime.min
-        self.range_update_interval = timedelta(hours=4)
-
-    def IsRangeBound(self):
-        if not self.bb.IsReady:
-            return False
-            
-        price = self.Securities[self.symbol].Price
-        upper_band = self.bb.UpperBand.Current.Value
-        lower_band = self.bb.LowerBand.Current.Value
-        middle_band = self.bb.MiddleBand.Current.Value
-        
-        # Prevent division by zero
-        band_difference = upper_band - lower_band
-        if abs(band_difference) < 0.00001:  # Use small epsilon for float comparison
-            return False
-            
-        # Calculate band width for range detection
-        band_width = band_difference / middle_band
-        
-        # Adjust thresholds for EURUSD typical ranges
-        # Less restrictive range to catch more opportunities
-        is_range = 0.0005 < band_width < 0.01
-        
-        # Calculate price position with zero division protection
-        price_position = (price - lower_band) / band_difference
-        within_bands = 0.1 < price_position < 0.9
-        
-        # Additional check for flat trend
-        is_flat = abs(self.sma.Current.Value - middle_band) < self.atr.Current.Value * 0.5
-        
-        return is_range and within_bands and is_flat
-
-
-
     def OnData(self, data):
         if self.IsWarmingUp or not data.ContainsKey(self.symbol): 
             return
 
-        if not self.IsRangeBound():
-            return  # Exit if not range-bound
-            
         self.UpdateRangeLevels()
         
         # Check if range levels are properly initialized
@@ -123,26 +81,20 @@ class RangeBoundHedgingAlgorithm(QCAlgorithm):
 
 
     def CalculateBuyLots(self):
-        """Calculate buy lot size with improved position sizing"""
-        base_size = self.Portfolio.TotalPortfolioValue * 0.02  # Reduce from 10% to 2%
-        
+        """Calculate buy lot size with position sizing"""
         if self.openBuyLots == 0 and self.openSellLots == 0:
-            return base_size
-            
-        # Calculate based on R2R formula from image
+            # Initial trade size
+            return self.Portfolio.TotalPortfolioValue * self.positionSize
         base_lots = ((self.r2r + 1) / self.r2r * self.openSellLots - self.openBuyLots) * 1.1
-        return min(base_lots, base_size)
+        return min(base_lots, self.Portfolio.TotalPortfolioValue * self.positionSize)
 
     def CalculateSellLots(self):
-        """Calculate sell lot size with improved position sizing"""
-        base_size = self.Portfolio.TotalPortfolioValue * 0.02
-        
+        """Calculate sell lot size with position sizing"""
         if self.openBuyLots == 0 and self.openSellLots == 0:
-            return base_size
-            
+            # Initial trade size
+            return self.Portfolio.TotalPortfolioValue * self.positionSize
         base_lots = ((self.r2r + 1) / self.r2r * self.openBuyLots - self.openSellLots) * 1.1
-        return min(base_lots, base_size)
-
+        return min(base_lots, self.Portfolio.TotalPortfolioValue * self.positionSize)
 
     def ExecuteBuyOrder(self, lots):
         """Execute buy order with risk management"""
@@ -174,57 +126,32 @@ class RangeBoundHedgingAlgorithm(QCAlgorithm):
         return total_unrealized_profit_pct < -self.maxDrawdown
 
     def IsVolatilityHigh(self):
-        """Improved volatility check"""
-        if not self.atr.IsReady:
-            return False
-            
-        try:
-            # Get current ATR
-            current_atr = self.atr.Current.Value
-            
-            # Calculate average ATR using available window values
-            window_values = [x for x in self.atr.Window if x is not None]
-            if len(window_values) < 20:
-                return False
-                
-            avg_atr = sum(x.Value for x in window_values[:20]) / 20
-            return current_atr > avg_atr * 1.2  # Compare to 20-period average
-            
-        except Exception as e:
-            self.Debug(f"Volatility check error: {str(e)}")
-            return False
-
+        """Check if current volatility is too high"""
+        return self.atr.Current.Value > self.atr.Current.Value * 1.5  # Compare to historical average
 
     def CanTrade(self):
-        """Enhanced trading conditions"""
+        """Check if trading conditions are met"""
         return (
-            self.Portfolio.MarginRemaining > self.Portfolio.TotalPortfolioValue * 0.4 and  # Increased margin requirement
+            self.Portfolio.MarginRemaining > self.Portfolio.TotalPortfolioValue * 0.25 and
             not self.IsExcessiveDrawdown() and
-            not self.IsVolatilityHigh() and
-            self.IsRangeBound() and
-            len(self.Transactions.GetOpenOrders()) < 6  # Limit open orders
+            not self.IsVolatilityHigh()
         )
 
-            
     def UpdateRangeLevels(self):
+        """Update support and resistance levels"""
         if not all([self.high.IsReady, self.low.IsReady, self.atr.IsReady]):
             return
             
-        current_time = self.Time
-        
-        # Update ranges every 4 hours or if not set
-        if (self.buyLine is None or self.sellLine is None or 
-            current_time - self.last_range_update >= self.range_update_interval):
-            
+        # Only update range levels if they haven't been set or significant time has passed
+        if self.buyLine is None or self.sellLine is None:
             self.buyLine = self.low.Current.Value
             self.sellLine = self.high.Current.Value
             
-            # Wider buffer for range levels
-            range_buffer = self.atr.Current.Value * 1.0  # Increased from 0.5
+            # Add buffer to range levels using ATR
+            range_buffer = self.atr.Current.Value * 0.5
             self.buyLine -= range_buffer
             self.sellLine += range_buffer
             
-            self.last_range_update = current_time
             self.Plot("Range Levels", "Support", self.buyLine)
             self.Plot("Range Levels", "Resistance", self.sellLine)
 
